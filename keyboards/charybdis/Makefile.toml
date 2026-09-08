@@ -1,0 +1,131 @@
+[config]
+# Our Cargo.toml sets [workspace] members = ["."] purely to stop Cargo from
+# unifying with any parent workspace. Without this, cargo-make's default
+# "workspace" pre-task treats the local rmk/rmk-macro/rmk-config path
+# dependencies as workspace members too, and fails re-running this Makefile's
+# tasks against the rmk crate (which has none) after this crate's own build
+# already succeeded.
+default_to_workspace = false
+
+[tasks.install-llvm-tools]
+install_crate = { rustup_component_name = "llvm-tools" }
+
+[tasks.flip-link]
+install_crate = { crate_name = "flip-link", binary = "flip-link", test_arg = ["-h"] }
+
+[tasks.build]
+command = "cargo"
+args = ["build", "--release"]
+dependencies = ["install-llvm-tools", "flip-link"]
+
+[tasks.objcopy-dongle]
+install_crate = { crate_name = "cargo-binutils", binary = "cargo", test_arg = [
+    "objcopy",
+    "--help",
+] }
+command = "cargo"
+args = [
+    "objcopy",
+    "--release",
+    "--bin",
+    "dongle",
+    "--",
+    "-O",
+    "ihex",
+    "charybdis-dongle.hex",
+]
+dependencies = ["build"]
+
+[tasks.objcopy-left]
+install_crate = { crate_name = "cargo-binutils", binary = "cargo", test_arg = [
+    "objcopy",
+    "--help",
+] }
+command = "cargo"
+args = [
+    "objcopy",
+    "--release",
+    "--bin",
+    "left",
+    "--",
+    "-O",
+    "ihex",
+    "charybdis-left.hex",
+]
+dependencies = ["build"]
+
+[tasks.objcopy-right]
+install_crate = { crate_name = "cargo-binutils", binary = "cargo", test_arg = [
+    "objcopy",
+    "--help",
+] }
+command = "cargo"
+args = [
+    "objcopy",
+    "--release",
+    "--bin",
+    "right",
+    "--",
+    "-O",
+    "ihex",
+    "charybdis-right.hex",
+]
+dependencies = ["build"]
+
+[tasks.uf2-dongle]
+install_crate = { crate_name = "cargo-hex-to-uf2", binary = "cargo", test_arg = [
+    "hex-to-uf2",
+    "--help",
+] }
+command = "cargo"
+args = [
+    "hex-to-uf2",
+    "--input-path",
+    "charybdis-dongle.hex",
+    "--output-path",
+    "charybdis-dongle.uf2",
+    "--family",
+    "nrf52840",
+]
+dependencies = ["objcopy-dongle"]
+
+[tasks.uf2-left]
+install_crate = { crate_name = "cargo-hex-to-uf2", binary = "cargo", test_arg = [
+    "hex-to-uf2",
+    "--help",
+] }
+command = "cargo"
+args = [
+    "hex-to-uf2",
+    "--input-path",
+    "charybdis-left.hex",
+    "--output-path",
+    "charybdis-left.uf2",
+    "--family",
+    "nrf52840",
+]
+dependencies = ["objcopy-left"]
+
+[tasks.uf2-right]
+install_crate = { crate_name = "cargo-hex-to-uf2", binary = "cargo", test_arg = [
+    "hex-to-uf2",
+    "--help",
+] }
+command = "cargo"
+args = [
+    "hex-to-uf2",
+    "--input-path",
+    "charybdis-right.hex",
+    "--output-path",
+    "charybdis-right.uf2",
+    "--family",
+    "nrf52840",
+]
+dependencies = ["objcopy-right"]
+
+[tasks.uf2-cleanup]
+command = "rm"
+args = ["charybdis-dongle.hex", "charybdis-left.hex", "charybdis-right.hex"]
+
+[tasks.uf2]
+dependencies = ["uf2-dongle", "uf2-left", "uf2-right", "uf2-cleanup"]

@@ -6,6 +6,24 @@
 
 mod layout;
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// Whether the last-known platform (see [`Platform`]) was Mac, restored from
+/// flash at boot (when the `storage` feature is enabled) so the
+/// [`USER_TOGGLE_MACOS`] toggle survives a reboot instead of always starting
+/// back on PC.
+static PERSISTED_MAC_PLATFORM: AtomicBool = AtomicBool::new(false);
+
+/// Called once at boot, after the persisted `BehaviorConfig` record (if any)
+/// has been read from flash.
+pub fn restore_platform_from_storage(is_mac: bool) {
+    PERSISTED_MAC_PLATFORM.store(is_mac, Ordering::Relaxed);
+}
+
+pub(crate) fn persisted_platform_is_mac() -> bool {
+    PERSISTED_MAC_PLATFORM.load(Ordering::Relaxed)
+}
+
 pub const USER_TOGGLE: u8 = 0x80;
 pub const USER_SYNC: u8 = 0x81;
 pub const USER_SET_ENGLISH: u8 = 0x82;
@@ -165,6 +183,15 @@ pub(crate) struct State {
 }
 
 impl State {
+    /// Build initial state with the platform restored from flash (see
+    /// [`restore_platform_from_storage`]), instead of always starting on PC.
+    pub(crate) fn from_persisted_platform() -> Self {
+        Self {
+            platform: if persisted_platform_is_mac() { Platform::Mac } else { Platform::Pc },
+            ..Default::default()
+        }
+    }
+
     pub(crate) fn handle(&mut self, user_id: u8, host_layout: Option<u8>) -> Option<Command> {
         self.sync_from_host(host_layout);
 
@@ -303,14 +330,16 @@ mod tests {
     }
 
     #[test]
-    fn mac_mode_uses_mac_russian_punctuation() {
+    fn mac_mode_uses_same_russian_punctuation_as_pc() {
+        // macOS's "Russian - PC" layout mirrors Windows/Linux punctuation
+        // placement, so Mac mode shouldn't need its own mapping here.
         let mut state = State::default();
         state.handle(USER_SYNC, None);
         state.handle(USER_TOGGLE_MACOS, None);
         let Command::Type(dot) = state.handle(USER_SYMBOL_START, None).unwrap() else {
             panic!("expected dot stroke");
         };
-        assert_eq!(dot.stroke.keycode, HidKeyCode::Kc7);
-        assert_eq!(dot.stroke.modifiers, ModifierCombination::LSHIFT);
+        assert_eq!(dot.stroke.keycode, HidKeyCode::Slash);
+        assert_eq!(dot.stroke.modifiers, ModifierCombination::new());
     }
 }

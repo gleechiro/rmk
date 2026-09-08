@@ -60,6 +60,14 @@ pub(crate) fn current_led_indicator() -> LedIndicator {
     LedIndicator::from_bits(LOCK_LED_STATES.load(core::sync::atomic::Ordering::Relaxed))
 }
 
+/// Earlier of two optional deadlines, or the one that's `Some` if only one is.
+fn earlier_deadline(a: Option<Instant>, b: Option<Instant>) -> Option<Instant> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(if a < b { a } else { b }),
+        (a, b) => a.or(b),
+    }
+}
+
 /// State machine for Caps Word
 #[derive(Debug, Default)]
 enum CapsWordState {
@@ -149,18 +157,25 @@ impl Runnable for Keyboard<'_> {
                 // Process buffered held key
                 self.process_buffered_key(key).await
             } else {
-                // If mouse repeat is pending, race subscriber against deadline
-                let event = if let Some(deadline) = self.mouse.next_deadline() {
+                // If mouse repeat or a pending universal-symbols layout revert is
+                // due, race the subscriber against whichever comes first.
+                let deadline = earlier_deadline(self.mouse.next_deadline(), self.universal_symbols_revert_deadline());
+                let event = if let Some(deadline) = deadline {
                     match with_deadline(deadline, self.keyboard_event_subscriber.next_message_pure()).await {
                         Ok(event) => event,
                         Err(_) => {
-                            // Repeat deadline expired, fire repeat
-                            self.fire_mouse_repeat().await;
+                            let now = Instant::now();
+                            if self.mouse.next_deadline().is_some_and(|d| now >= d) {
+                                self.fire_mouse_repeat().await;
+                            }
+                            if self.universal_symbols_revert_deadline().is_some_and(|d| now >= d) {
+                                self.universal_symbols_revert_if_pending().await;
+                            }
                             continue;
                         }
                     }
                 } else {
-                    // No repeat pending, wait indefinitely
+                    // Nothing pending, wait indefinitely
                     self.keyboard_event_subscriber.next_message_pure().await
                 };
                 self.process_inner(event).await
@@ -192,6 +207,13 @@ pub struct Keyboard<'a> {
     /// Record the timestamp of last **simple key** press.
     /// It's used in tap-hold prior-idle-time check.
     last_press_time: Instant,
+
+    /// Position of the last **simple key** press, alongside `last_press_time`.
+    /// Used to restrict flow tap to same-hand sequences (see its use below),
+    /// so it still protects fast same-hand rolls without also swallowing a
+    /// deliberate hold of a different-hand mod-tap key (e.g. reaching for a
+    /// modifier right after typing).
+    last_press_pos: Option<KeyboardEventPos>,
 
     /// stores the last KeyCode executed, to be repeated if the repeat key os pressed
     /// Used in repeat-key
@@ -243,6 +265,16 @@ pub struct Keyboard<'a> {
     #[cfg(feature = "universal_symbols")]
     universal_symbols: crate::universal_symbols::State,
 
+    /// Deadline for automatically reverting a temporary host-layout switch
+    /// back to Russian, if nothing else has already caused it to revert.
+    /// `Some` exactly when the host is currently sitting on a
+    /// temporarily-forced English layout on behalf of a Russian-layout
+    /// symbol (e.g. `<`, `{`). Reused/extended on every further such symbol
+    /// so a whole run of them (e.g. `<Ю<>БЮ<>`) only pays for one switch out
+    /// and one switch back, instead of one round trip per character.
+    #[cfg(feature = "universal_symbols")]
+    universal_symbols_revert_deadline: Option<Instant>,
+
     /// Plover HID stenography chord accumulator
     #[cfg(feature = "steno")]
     steno: crate::keyboard::steno::StenoChord,
@@ -258,6 +290,7 @@ impl<'a> Keyboard<'a> {
             keymap,
             keyboard_event_subscriber: KeyboardEvent::subscriber(),
             last_press_time: Instant::now(),
+            last_press_pos: None,
             osl_state: OneShotState::default(),
             osm_state: OneShotState::default(),
             caps_word: CapsWordState::default(),
@@ -277,7 +310,9 @@ impl<'a> Keyboard<'a> {
             last_key_code: HidKeyCode::No,
             combo_on: true,
             #[cfg(feature = "universal_symbols")]
-            universal_symbols: crate::universal_symbols::State::default(),
+            universal_symbols: crate::universal_symbols::State::from_persisted_platform(),
+            #[cfg(feature = "universal_symbols")]
+            universal_symbols_revert_deadline: None,
             #[cfg(feature = "steno")]
             steno: crate::keyboard::steno::StenoChord::new(),
             #[cfg(feature = "passkey_entry")]
@@ -506,7 +541,7 @@ impl<'a> Keyboard<'a> {
                                 debug!("Pattern after unilateral tap or flow tap: {:?}", pattern);
                                 let action = Self::action_from_pattern(self.keymap, &held_key.action, pattern);
                                 self.process_key_action_normal(action, held_key.event).await;
-                                held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action);
+                                held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action, pattern);
                                 // Push back after triggered tap
                                 self.held_buffer.push_without_sort(held_key);
                             }
@@ -545,7 +580,7 @@ impl<'a> Keyboard<'a> {
                                     debug!("pattern after permissive hold: {:?}", pattern);
                                     let action = Self::action_from_pattern(self.keymap, &action, pattern);
                                     self.process_key_action_normal(action, held_key.event).await;
-                                    held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action);
+                                    held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action, pattern);
                                     // Push back after triggered hold
                                     self.held_buffer.push_without_sort(held_key);
                                 }
@@ -607,7 +642,7 @@ impl<'a> Keyboard<'a> {
                                     if let Some(action) = final_action {
                                         debug!("tap prediction {:?} -> {:?}", pattern, action);
                                         self.process_key_action_normal(action, held_key.event).await;
-                                        held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action);
+                                        held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action, pattern);
                                         resolved = true;
                                     }
                                 }
@@ -671,6 +706,7 @@ impl<'a> Keyboard<'a> {
             && key_action.is_morse()
             && Self::is_flow_tap_enabled(self.keymap, key_action)
             && self.last_press_time.elapsed() < self.keymap.morse_prior_idle_time()
+            && Self::flow_tap_hand_matches(self.keymap, key_action, event.pos, self.last_press_pos)
         {
             // It's in key streak, trigger the first tap action
             debug!("Flow tap detected, trigger tap action for current morse key");
@@ -698,6 +734,57 @@ impl<'a> Keyboard<'a> {
             {
                 // Releasing a key is already buffered
                 if !event.pressed && held_key.action == *key_action {
+                    // Default: releasing a still-pending morse key resolves as
+                    // tap. But permissive_hold's protection otherwise only
+                    // covers the interrupting key releasing *before* this
+                    // one - if the user releases this key first (very common
+                    // when chording, e.g. Shift+Enter released together),
+                    // it fell through to a tap even though another key was
+                    // still actively held down. Catch that case here: if
+                    // another *different-hand* key is still pressed right
+                    // now, resolve as hold instead, exactly as if that key's
+                    // release had arrived first.
+                    //
+                    // The hand check here is unconditional, not gated behind
+                    // the global unilateral_tap setting: brief overlap
+                    // between two keys happens constantly during ordinary
+                    // fast typing regardless of whether unilateral_tap is
+                    // enabled, and is not by itself evidence of a deliberate
+                    // chord unless the keys are on different hands.
+                    //
+                    // Restricted to a non-morse "other" key (e.g. Enter):
+                    // when the other key is itself an unresolved mod-tap key
+                    // (another HRM mid-roll), overlap is the normal, expected
+                    // shape of a fast cross-hand roll like "sk", not evidence
+                    // of a deliberate two-modifier chord - forcing a hold
+                    // here previously turned ordinary fast typing into
+                    // simultaneous modifiers (e.g. spuriously triggering the
+                    // OS layout-switch shortcut).
+                    let interrupted_by_other_key = key_action.is_morse()
+                        && Self::tap_hold_mode(self.keymap, key_action) == MorseMode::PermissiveHold
+                        && matches!(event.pos, KeyboardEventPos::Key(_))
+                        && self.held_buffer.keys.iter().any(|other| {
+                            other.event.pos != event.pos
+                                && !other.action.is_morse()
+                                && matches!(other.state, KeyState::Pressed(_))
+                                && match (event.pos, other.event.pos) {
+                                    (KeyboardEventPos::Key(self_pos), KeyboardEventPos::Key(other_pos)) => !self
+                                        .keymap
+                                        .hand_at(self_pos.row as usize, self_pos.col as usize)
+                                        .is_same_side(
+                                            self.keymap.hand_at(other_pos.row as usize, other_pos.col as usize),
+                                        ),
+                                    _ => true,
+                                }
+                        });
+
+                    if interrupted_by_other_key {
+                        debug!("Releasing held key while another key is still down: resolve as hold");
+                        let _ = decisions.push((held_key.event.pos, HeldKeyDecision::PermissiveHold));
+                        decision_for_current_key = KeyBehaviorDecision::CleanBuffer;
+                        continue;
+                    }
+
                     debug!("Releasing a held key: {:?}", event);
                     let _ = decisions.push((held_key.event.pos, HeldKeyDecision::Release));
                     decision_for_current_key = KeyBehaviorDecision::Release;
@@ -1393,6 +1480,16 @@ impl<'a> Keyboard<'a> {
     }
 
     async fn process_key_action_normal(&mut self, action: Action, event: KeyboardEvent) {
+        // A prior Universal Symbols key may have left the host temporarily
+        // switched to English on Russian's behalf (e.g. typing `<`). Any other
+        // real keypress means the user has moved on, so resync the host back
+        // before this key is dispatched rather than waiting for the idle
+        // timeout. Action::User is excluded: it drives its own Universal
+        // Symbols state machine and handles reverting itself.
+        if event.pressed && !matches!(action, Action::User(_)) {
+            self.universal_symbols_revert_if_pending().await;
+        }
+
         publish_event_async(ActionEvent {
             action,
             keyboard_event: event,
@@ -1643,6 +1740,14 @@ impl<'a> Keyboard<'a> {
             result |= ModifierCombination::new().with_left_shift(true);
         }
 
+        // In Mac mode (toggled via Universal Symbols' platform switch), the
+        // physical Ctrl-labeled keys act as Cmd and vice versa, so shortcuts
+        // stay under the same finger as on PC/Linux.
+        #[cfg(feature = "universal_symbols")]
+        if self.universal_symbols.platform() == crate::universal_symbols::Platform::Mac {
+            result = result.swap_ctrl_gui();
+        }
+
         result
     }
 
@@ -1787,6 +1892,7 @@ impl<'a> Keyboard<'a> {
             // Record last press time, only for the simple key
             if key.is_simple_key() {
                 self.last_press_time = Instant::now();
+                self.last_press_pos = Some(event.pos);
             }
 
             // Update last key code
@@ -2002,6 +2108,37 @@ impl<'a> Keyboard<'a> {
         yield_now().await;
     }
 
+    /// How long the host may be left on a temporarily-forced English layout
+    /// after typing a Russian-unavailable symbol before we revert it
+    /// ourselves, if nothing else (e.g. the next keystroke) already did.
+    /// Mirrors the fallback idle-revert used by the original QMK RuEn setup.
+    #[cfg(feature = "universal_symbols")]
+    const UNIVERSAL_SYMBOLS_REVERT_TIMEOUT: Duration = Duration::from_millis(500);
+
+    #[cfg(feature = "universal_symbols")]
+    fn universal_symbols_revert_deadline(&self) -> Option<Instant> {
+        self.universal_symbols_revert_deadline
+    }
+
+    #[cfg(not(feature = "universal_symbols"))]
+    fn universal_symbols_revert_deadline(&self) -> Option<Instant> {
+        None
+    }
+
+    /// If the host is currently sitting on a temporarily-forced English
+    /// layout (see [`Self::universal_symbols_revert_deadline`]), switch it
+    /// back to the real layout now.
+    #[cfg(feature = "universal_symbols")]
+    async fn universal_symbols_revert_if_pending(&mut self) {
+        if self.universal_symbols_revert_deadline.take().is_some() {
+            let platform = self.universal_symbols.platform();
+            self.send_universal_symbols_layout_switch(platform).await;
+        }
+    }
+
+    #[cfg(not(feature = "universal_symbols"))]
+    async fn universal_symbols_revert_if_pending(&mut self) {}
+
     #[cfg(feature = "universal_symbols")]
     async fn process_universal_symbols_user_action(&mut self, user_id: u8, event: KeyboardEvent) {
         if !event.pressed {
@@ -2014,22 +2151,53 @@ impl<'a> Keyboard<'a> {
         };
         let platform = self.universal_symbols.platform();
 
+        #[cfg(feature = "storage")]
+        if user_id == crate::universal_symbols::USER_TOGGLE_MACOS {
+            crate::channel::FLASH_CHANNEL
+                .send(crate::storage::FlashOperationMessage::UniversalSymbolsMacPlatform(
+                    platform == crate::universal_symbols::Platform::Mac,
+                ))
+                .await;
+        }
+
         match command {
             crate::universal_symbols::Command::None => {}
             crate::universal_symbols::Command::SwitchLayout => {
-                self.send_universal_symbols_layout_switch(platform).await;
+                // If a symbol already left the host on a temporarily-forced
+                // English layout, that forced layout is necessarily the same
+                // one this explicit switch is heading to (see the type-level
+                // reasoning in Command::Type below) - so there's nothing left
+                // to send, just stop treating it as temporary.
+                if self.universal_symbols_revert_deadline.take().is_none() {
+                    self.send_universal_symbols_layout_switch(platform).await;
+                }
             }
             crate::universal_symbols::Command::Type(resolved) => {
                 if resolved.temporary_english {
-                    self.send_universal_symbols_layout_switch(platform).await;
+                    // Only actually switch if the host isn't already sitting
+                    // on the forced-English layout from a previous symbol in
+                    // this same run; either way, (re)arm the idle-revert
+                    // deadline so a whole run of symbols pays for one switch
+                    // out and one switch back, not one round trip each.
+                    if self.universal_symbols_revert_deadline.is_none() {
+                        self.send_universal_symbols_layout_switch(platform).await;
+                    }
+                    self.universal_symbols_revert_deadline =
+                        Some(Instant::now() + Self::UNIVERSAL_SYMBOLS_REVERT_TIMEOUT);
+                } else {
+                    // This stroke expects the host to be on its native
+                    // (non-English-forced) layout; revert first if a prior
+                    // symbol left it temporarily on English.
+                    self.universal_symbols_revert_if_pending().await;
                 }
                 self.send_universal_symbols_tap(resolved.stroke.keycode, resolved.stroke.modifiers)
                     .await;
-                if resolved.temporary_english {
-                    self.send_universal_symbols_layout_switch(platform).await;
-                }
             }
             crate::universal_symbols::Command::TypeRussianLetter(keycode) => {
+                // A raw Cyrillic letter relies on the host actually being on
+                // the Russian layout; revert first if a prior symbol left it
+                // temporarily on English.
+                self.universal_symbols_revert_if_pending().await;
                 let mut letter_event = event;
                 self.process_action_key_with_caps_word_key(keycode, HidKeyCode::A, letter_event)
                     .await;
@@ -2043,18 +2211,39 @@ impl<'a> Keyboard<'a> {
 
     #[cfg(feature = "universal_symbols")]
     async fn send_universal_symbols_layout_switch(&mut self, platform: crate::universal_symbols::Platform) {
+        if platform == crate::universal_symbols::Platform::Mac {
+            // macOS's input-source switch shortcut is normally Ctrl+Space,
+            // but that collides with other bindings on many setups. Instead,
+            // rely on macOS's native "Press Caps Lock key to: Select the
+            // previous input source" option (System Settings > Keyboard >
+            // Input Sources) and tap a literal Caps Lock.
+            //
+            // Caps Lock is a toggle-switch key, and macOS's input-source
+            // remapping of it appears to need a more deliberate press than
+            // the 10ms hold used for ordinary symbol taps below - a very
+            // short programmatic tap was observed to switch inconsistently.
+            let Some((pressed_keys, released_keys)) = self.universal_symbols_key_reports(HidKeyCode::CapsLock) else {
+                warn!("Universal Symbols: no free 6KRO slot for layout switch");
+                return;
+            };
+            self.send_universal_symbols_report(ModifierCombination::new(), pressed_keys)
+                .await;
+            Timer::after_millis(60).await;
+            self.send_universal_symbols_report(ModifierCombination::new(), released_keys)
+                .await;
+            self.send_keyboard_report_with_resolved_modifiers(false).await;
+            return;
+        }
+
         let Some((pressed_keys, released_keys)) = self.universal_symbols_key_reports(HidKeyCode::Space) else {
             warn!("Universal Symbols: no free 6KRO slot for layout switch");
             return;
         };
-        let modifier = match platform {
-            crate::universal_symbols::Platform::Pc => ModifierCombination::LGUI,
-            crate::universal_symbols::Platform::Mac => ModifierCombination::LCTRL,
-        };
 
-        self.send_universal_symbols_report(modifier, pressed_keys).await;
+        self.send_universal_symbols_report(ModifierCombination::LGUI, pressed_keys).await;
         Timer::after_millis(10).await;
-        self.send_universal_symbols_report(modifier, released_keys).await;
+        self.send_universal_symbols_report(ModifierCombination::LGUI, released_keys)
+            .await;
         self.send_universal_symbols_report(ModifierCombination::new(), released_keys)
             .await;
         Timer::after_millis(50).await;

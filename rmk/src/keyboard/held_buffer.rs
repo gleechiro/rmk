@@ -117,8 +117,9 @@ pub enum KeyState {
 
     /// The corresponding action is already executed (so the Pressed HID report is sent),
     /// but the release HID report is not sent yet (will be sent only when the corresponding
-    /// key is really released).
-    ProcessedButReleaseNotReportedYet(Action),
+    /// key is really released). The pattern that produced this action is kept so that,
+    /// if it ended in a tap, hold_after_tap can continue once the release is reported.
+    ProcessedButReleaseNotReportedYet(Action, MorsePattern),
     // The Idle state is represented by the removal from the HeldBuffer
 }
 

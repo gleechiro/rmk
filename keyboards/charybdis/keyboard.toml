@@ -1,0 +1,221 @@
+[keyboard]
+name = "Charybdis"
+product_name = "Charybdis"
+vendor_id = 0x4C4B
+product_id = 0x4643
+manufacturer = "RMK"
+chip = "nrf52840"
+
+[host]
+vial_enabled = true
+unlock_keys = [[0, 0], [0, 1]]
+
+[event]
+action.channel_size = 16
+action.subs = 2
+keyboard.subs = 4
+layer_change.channel_size = 4
+layer_change.subs = 3
+peripheral_settings_refresh.subs = 1
+# Default is 8 (~64ms of buffered motion at 125 Hz). Widened to rule out
+# the pointing pipeline dropping/backing up samples under split-link
+# contention as a cause of trackball stutter/teleporting.
+pointing.channel_size = 32
+
+[layout]
+rows = 5
+cols = 12
+layers = 16
+no_action_layer_start = 5
+matrix_map = """
+(0,0,L) (0,1,L) (0,2,L) (0,3,L) (0,4,L) (0,5,L)     (0,11,R) (0,10,R) (0,9,R) (0,8,R) (0,7,R) (0,6,R)
+(1,0,L) (1,1,L) (1,2,L) (1,3,L) (1,4,L) (1,5,L)     (1,11,R) (1,10,R) (1,9,R) (1,8,R) (1,7,R) (1,6,R)
+(2,0,L) (2,1,L) (2,2,L) (2,3,L) (2,4,L) (2,5,L)     (2,11,R) (2,10,R) (2,9,R) (2,8,R) (2,7,R) (2,6,R)
+(3,0,L) (3,1,L) (3,2,L) (3,3,L) (3,4,L) (3,5,L)     (3,11,R) (3,10,R) (3,9,R) (3,8,R) (3,7,R) (3,6,R)
+        (4,3,L) (4,4,L) (4,1,L) (4,5,L) (4,2,L)     (4,7,R) (4,9,R) (4,11,R)
+"""
+
+[[layer]]
+name = "Base"
+# Home row mods (A/S/D/F -> Gui/Alt/Shift/Ctrl, mirrored on J/K/L/;) match the
+# Redox layout's scheme and ergohaven's own K:04/OP36 house style.
+# CapsLock is a placeholder: open Entropy and reassign this key to the
+# Universal Symbols "Toggle EN/RU" action if you want RuEn switching here
+# (that action can't be hardcoded into keyboard.toml, see chat notes).
+keys = """
+Escape     Kc1        Kc2         Kc3          Kc4         Kc5        Kc6        Kc7        Kc8          Kc9           Kc0                 Delete
+Tab        Q          W           E            R           T          Y          U          I            O             P                   LeftBracket
+CapsLock   MT(A,LGui) MT(S,LAlt)  MT(D,LShift) MT(F,LCtrl) G          H          MT(J,RCtrl) MT(K,RShift) MT(L,RAlt)    MT(Semicolon,RGui)  Quote
+LShift     Z          X           C            V           B          N          M          Comma        Dot           Slash               RightBracket
+           MO(1)      Enter       LGui         LCtrl       Space      LAlt       MO(2)      Backspace
+"""
+
+[[layer]]
+name = "Nav"
+keys = """
+F1         F2         F3         F4         F5         F6         F7             F8            F9            F10            F11    F12
+_          _          _          _          _          _          Home           Up            End           PageUp         _      _
+_          _          _          _          _          _          Left           Down          Right         PageDown       _      _
+_          _          _          _          _          _          MediaPrevTrack AudioVolDown  AudioVolUp    MediaNextTrack _      _
+           _          _          _          _          _          MO(3)          _
+"""
+
+[[layer]]
+name = "Symbols"
+keys = """
+Grave      SHIFTED(Kc1) SHIFTED(Kc2) SHIFTED(Kc3) SHIFTED(Kc4) SHIFTED(Kc5) SHIFTED(Kc6) SHIFTED(Kc7) SHIFTED(Kc8)   SHIFTED(Kc9)   SHIFTED(Kc0) _
+_          _            _            _            _            _            _            _            _              _              Minus        Equal
+_          _            _            _            _            _            _            _            _              _              SHIFTED(Minus) SHIFTED(Equal)
+_          _            _            _            _            _            _            _            _              _              Backslash    SHIFTED(Backslash)
+           MO(4)        _            _            _            _            _            _
+"""
+
+[[layer]]
+name = "Adjust"
+keys = """
+Bootloader _          _          _          _          _          User0        User1          User2      User3   User4  User7
+_          _          _          _          _          _          User5        User6          User8      User9   _      _
+_          _          _          _          _          _          OutputUsb    OutputBluetooth _          _       _      _
+_          _          _          _          _          _          AudioVolDown AudioVolUp     AudioMute  _       _      _
+           _          _          _          _          _          _            _
+"""
+
+[[layer]]
+name = "Mouse"
+keys = """
+_  _  _  _  _  _          _       _          _          _          _  _
+_  _  _  _  _  User11     User10  MouseBtn1  MouseBtn2  MouseBtn3  _  _
+_  _  _  _  _  User12     _       _          _          _          _  _
+_  _  _  _  _  _          _       _          _          _          _  _
+   _  _  _  _  _          _       _
+"""
+
+[ble]
+enabled = true
+
+[split]
+connection = "ble"
+
+# Dongle: no physical matrix of its own, just relays USB/BLE for both halves.
+[split.central]
+rows = 0
+cols = 0
+row_offset = 0
+col_offset = 0
+
+[split.central.matrix]
+matrix_type = "direct_pin"
+direct_pins = []
+
+# Left half
+[[split.peripheral]]
+rows = 5
+cols = 6
+row_offset = 0
+col_offset = 0
+
+[split.peripheral.matrix]
+row_pins = ["P0_31", "P1_15", "P0_24", "P0_22", "P1_06"]
+col_pins = ["P0_02", "P0_29", "P0_09", "P1_00", "P0_11", "P1_04"]
+row2col = true
+bootmagic = [0, 0]
+
+# Right half
+[[split.peripheral]]
+rows = 5
+cols = 6
+row_offset = 0
+col_offset = 6
+
+[split.peripheral.matrix]
+row_pins = ["P0_31", "P1_15", "P0_24", "P0_22", "P1_06"]
+col_pins = ["P0_02", "P0_29", "P0_09", "P1_00", "P0_11", "P1_04"]
+row2col = true
+bootmagic = [0, 0]
+
+# PMW3610 trackball on the right half.
+[[split.peripheral.input_device.pmw3610]]
+name = "trackball0"
+
+spi.instance = "bitbang0"
+spi.sck = "P0_08"
+spi.mosi = "P0_17"
+spi.miso = "P0_17"
+spi.cs = "P0_20"
+
+motion = "P0_06"
+
+force_awake = false
+smart_mode = true
+cpi = 800
+report_hz = 125
+
+swap_xy = true
+invert_x = true
+invert_y = true
+
+# Default morse/tap-hold config - deliberately set at the top level instead
+# of a named [behavior.morse.profiles.X] table. Reason: a mod-tap key that's
+# ever been touched through Entropy's normal key picker gets its per-key
+# profile fields permanently blanked (Entropy's classic Vial protocol path
+# has no way to encode a named-profile reference), and a blanked field
+# always falls back to THIS top-level default - so keeping everything here
+# means home row mods behave identically whether Entropy has touched them
+# or not, with nothing that can silently stop applying.
+#
+# permissive_hold resolves a held modifier the instant a real chord
+# completes (instant, not laggy) and also makes RMK buffer the interrupting
+# key the same way QMK does by default, which is what actually prevents a
+# separate reordering bug ("like" -> "liek": RMK's plain mode, unlike QMK's,
+# does not buffer other keys while a mod-tap key is pending). unilateral_tap
+# forces any same-hand sequence (including Shift + a same-hand letter) to
+# always resolve as a tap; residual misfire risk is limited to fast
+# cross-hand rolls, the accepted tradeoff any permissive-hold setup has.
+# flow_tap/prior_idle_time further reduce reordering risk by resolving a
+# freshly-pressed mod-tap key as an instant tap during fast typing streaks.
+[behavior.morse]
+enable_flow_tap = false
+prior_idle_time = "300ms"
+permissive_hold = true
+unilateral_tap = true
+hold_timeout = "200ms"
+gap_timeout = "200ms"
+
+# Fallback auto-mouse-layer config; VelvetPointingMode overrides this at
+# runtime from the persistent Entropy-configurable pointing settings.
+[[behavior.auto_mouse_layer]]
+device_id = 0
+target_layer = 4
+timeout = "500ms"
+threshold = 2
+
+[rmk]
+split_peripherals_num = 2
+split_pairing_timeout_seconds = 30
+ble_reconnect_timeout_seconds = 60
+ble_pairing_timeout_seconds = 60
+# The dongle is USB-powered from the host like an Ergohaven Qube dongle, not
+# a battery-powered half, so it uses the "powered" sleep timeout.
+split_central_sleep_timeout_seconds = 900
+combo_max_num = 32
+combo_max_length = 4
+fork_max_num = 8
+morse_max_num = 32
+max_patterns_per_key = 8
+macro_space_size = 2048
+ble_profiles_num = 5
+protocol_max_bulk_size = 8
+protocol_macro_chunk_size = 64
+# RMK's default is 20ms; QMK's (and your old Redox's, unchanged) default is
+# 5ms. That extra ~15ms of inherent latency on every keypress, not just home
+# row mods, is a plausible source of feeling "a little worse" overall -
+# most noticeable on whatever key you press most often (Shift).
+debounce_time = 5
+
+[storage]
+# Keep the 128 KiB RMK storage area outside the linked application image
+# (memory.x ends the app FLASH region at 0xCC000 to match).
+start_addr = 0xCC000
+num_sectors = 32
+clear_storage = false
+clear_layout = false

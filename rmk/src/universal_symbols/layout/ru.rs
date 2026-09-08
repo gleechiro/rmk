@@ -12,31 +12,27 @@ pub(super) const fn letter_keycode(letter: RussianLetter) -> HidKeyCode {
     }
 }
 
-pub(super) const fn stroke(platform: Platform, symbol: Symbol) -> ResolvedStroke {
-    let direct = match (platform, symbol) {
-        (Platform::Pc, Symbol::Dot) => Some(Stroke::plain(HidKeyCode::Slash)),
-        (Platform::Mac, Symbol::Dot) => Some(Stroke::shifted(HidKeyCode::Kc7)),
-        (Platform::Pc, Symbol::Comma) => Some(Stroke::shifted(HidKeyCode::Slash)),
-        (Platform::Mac, Symbol::Comma) => Some(Stroke::shifted(HidKeyCode::Kc6)),
-        (Platform::Pc, Symbol::Semicolon) => Some(Stroke::shifted(HidKeyCode::Kc4)),
-        (Platform::Mac, Symbol::Semicolon) => Some(Stroke::shifted(HidKeyCode::Kc8)),
-        (Platform::Pc, Symbol::Colon) => Some(Stroke::shifted(HidKeyCode::Kc6)),
-        (Platform::Mac, Symbol::Colon) => Some(Stroke::shifted(HidKeyCode::Kc5)),
-        (_, Symbol::Exclamation) => Some(Stroke::shifted(HidKeyCode::Kc1)),
-        (Platform::Pc, Symbol::Question) => Some(Stroke::shifted(HidKeyCode::Kc7)),
-        (Platform::Mac, Symbol::Question) => Some(Stroke::shifted(HidKeyCode::Slash)),
-        (Platform::Pc, Symbol::Slash) => Some(Stroke::shifted(HidKeyCode::Backslash)),
-        (Platform::Mac, Symbol::Slash) => Some(Stroke::plain(HidKeyCode::Slash)),
-        (_, Symbol::Quote) => Some(Stroke::shifted(HidKeyCode::Kc2)),
-        (_, Symbol::LeftParenthesis) => Some(Stroke::shifted(HidKeyCode::Kc9)),
-        (_, Symbol::RightParenthesis) => Some(Stroke::shifted(HidKeyCode::Kc0)),
-        (_, Symbol::Minus) => Some(Stroke::plain(HidKeyCode::Minus)),
-        (_, Symbol::Plus) => Some(Stroke::shifted(HidKeyCode::Equal)),
-        (_, Symbol::Asterisk) => Some(Stroke::shifted(HidKeyCode::Kc8)),
-        (_, Symbol::Equal) => Some(Stroke::plain(HidKeyCode::Equal)),
-        (Platform::Pc, Symbol::Percent) => Some(Stroke::shifted(HidKeyCode::Kc5)),
-        (Platform::Mac, Symbol::Percent) => Some(Stroke::shifted(HidKeyCode::Kc4)),
-        (_, Symbol::Underscore) => Some(Stroke::shifted(HidKeyCode::Minus)),
+// macOS's "Russian - PC" layout (the common choice for Russian Mac users,
+// and the one this firmware targets) deliberately mirrors Windows/Linux
+// punctuation placement, so `stroke` doesn't need a per-platform branch here.
+pub(super) const fn stroke(_platform: Platform, symbol: Symbol) -> ResolvedStroke {
+    let direct = match symbol {
+        Symbol::Dot => Some(Stroke::plain(HidKeyCode::Slash)),
+        Symbol::Comma => Some(Stroke::shifted(HidKeyCode::Slash)),
+        Symbol::Semicolon => Some(Stroke::shifted(HidKeyCode::Kc4)),
+        Symbol::Colon => Some(Stroke::shifted(HidKeyCode::Kc6)),
+        Symbol::Exclamation => Some(Stroke::shifted(HidKeyCode::Kc1)),
+        Symbol::Question => Some(Stroke::shifted(HidKeyCode::Kc7)),
+        Symbol::Slash => Some(Stroke::shifted(HidKeyCode::Backslash)),
+        Symbol::Quote => Some(Stroke::shifted(HidKeyCode::Kc2)),
+        Symbol::LeftParenthesis => Some(Stroke::shifted(HidKeyCode::Kc9)),
+        Symbol::RightParenthesis => Some(Stroke::shifted(HidKeyCode::Kc0)),
+        Symbol::Minus => Some(Stroke::plain(HidKeyCode::Minus)),
+        Symbol::Plus => Some(Stroke::shifted(HidKeyCode::Equal)),
+        Symbol::Asterisk => Some(Stroke::shifted(HidKeyCode::Kc8)),
+        Symbol::Equal => Some(Stroke::plain(HidKeyCode::Equal)),
+        Symbol::Percent => Some(Stroke::shifted(HidKeyCode::Kc5)),
+        Symbol::Underscore => Some(Stroke::shifted(HidKeyCode::Minus)),
         _ => None,
     };
 

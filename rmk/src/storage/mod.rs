@@ -293,6 +293,9 @@ pub(crate) enum FlashOperationMessage {
     #[cfg(feature = "_ble")]
     // Read the persisted active BLE profile number; storage task replies via `ACTIVE_BLE_PROFILE_RESPONSE`.
     ReadActiveBleProfile,
+    #[cfg(feature = "universal_symbols")]
+    // Whether Universal Symbols' platform toggle is set to Mac, so it survives a reboot
+    UniversalSymbolsMacPlatform(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -478,6 +481,9 @@ pub(crate) struct BehaviorConfig {
     // Interval for tapping capslock.
     // macOS has special processing of capslock, when tapping capslock, the tap interval should be another value
     pub(crate) tap_capslock_interval: u16,
+    #[cfg(feature = "universal_symbols")]
+    // Whether Universal Symbols' platform toggle was last set to Mac
+    pub(crate) universal_symbols_mac_platform: bool,
 }
 
 impl From<LocalStorageConfig> for StorageData {
@@ -502,6 +508,12 @@ impl From<&config::BehaviorConfig> for StorageData {
             one_shot_timeout: behavior.one_shot.timeout.as_millis() as u16,
             tap_interval: behavior.tap.tap_interval,
             tap_capslock_interval: behavior.tap.tap_capslock_interval,
+            // Universal Symbols' platform toggle has no compile-time config;
+            // it's pure runtime state, restored separately by
+            // `update_storage_field!`/`restore_platform_from_storage` once a
+            // real value has been persisted. Default to PC before that.
+            #[cfg(feature = "universal_symbols")]
+            universal_symbols_mac_platform: false,
         })
     }
 }
@@ -1136,6 +1148,15 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                 }
                 FlashOperationMessage::MorseDefaultProfile(morse_default_profile) => {
                     update_storage_field!(&mut self.flash, &mut self.buffer, BehaviorConfig, morse_default_profile)
+                }
+                #[cfg(feature = "universal_symbols")]
+                FlashOperationMessage::UniversalSymbolsMacPlatform(universal_symbols_mac_platform) => {
+                    update_storage_field!(
+                        &mut self.flash,
+                        &mut self.buffer,
+                        BehaviorConfig,
+                        universal_symbols_mac_platform
+                    )
                 }
             };
 

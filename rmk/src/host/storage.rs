@@ -140,11 +140,23 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                 }
                 (StorageKey::BehaviorConfig, StorageData::BehaviorConfig(config)) => {
                     behavior.morse.prior_idle_time = embassy_time::Duration::from_millis(config.prior_idle_time as u64);
-                    behavior.morse.default_profile = config.morse_default_profile;
+                    // Keep the compiled keyboard.toml mode (Normal/PermissiveHold/
+                    // HoldOnOtherPress) authoritative rather than whatever a stray
+                    // live Vial write last left in flash. This field has proven
+                    // easy to drift silently (e.g. a settings-app reset can leave
+                    // it on Normal with no live control able to set it back to
+                    // PermissiveHold specifically), breaking tap-hold ordering
+                    // with no way to notice until it's already misbehaving.
+                    // Everything else in the profile (timeouts, unilateral_tap)
+                    // stays live-adjustable as before.
+                    let compiled_mode = behavior.morse.default_profile.mode();
+                    behavior.morse.default_profile = config.morse_default_profile.with_mode(compiled_mode);
                     behavior.combo.timeout = embassy_time::Duration::from_millis(config.combo_timeout as u64);
                     behavior.one_shot.timeout = embassy_time::Duration::from_millis(config.one_shot_timeout as u64);
                     behavior.tap.tap_interval = config.tap_interval;
                     behavior.tap.tap_capslock_interval = config.tap_capslock_interval;
+                    #[cfg(feature = "universal_symbols")]
+                    crate::universal_symbols::restore_platform_from_storage(config.universal_symbols_mac_platform);
                 }
                 (StorageKey::MacroData, StorageData::MacroData(macro_data)) => {
                     behavior.keyboard_macros.macro_sequences.copy_from_slice(&macro_data);

@@ -2,7 +2,7 @@ use embassy_time::{Duration, Instant};
 use rmk_types::action::{Action, KeyAction};
 use rmk_types::morse::{HOLD, MorseMode, MorsePattern, TAP};
 
-use crate::event::KeyboardEvent;
+use crate::event::{KeyboardEvent, KeyboardEventPos};
 use crate::keyboard::Keyboard;
 use crate::keyboard::held_buffer::{HeldKey, KeyState};
 use crate::keymap::KeyMap;
@@ -24,7 +24,7 @@ impl<'a> Keyboard<'a> {
                     debug!("hold prediction {:?} -> {:?}", pattern, action);
                     self.process_key_action_normal(action, key.event).await;
                     if let Some(k) = self.held_buffer.find_pos_mut(key.event.pos) {
-                        k.state = KeyState::ProcessedButReleaseNotReportedYet(action);
+                        k.state = KeyState::ProcessedButReleaseNotReportedYet(action, pattern);
                     }
                 } else {
                     // Expect a possible longer morse pattern (or idle timeout after release), so can not finish yet...
@@ -133,9 +133,6 @@ impl<'a> Keyboard<'a> {
                         let final_action = Self::try_predict_final_action(self.keymap, &k.action, pattern);
                         if let Some(action) = final_action {
                             debug!("released prediction {:?} -> {:?}", pattern, action);
-                            // Reached the longest configured morse pattern, trigger the corresponding action immediately
-                            self.held_buffer.remove(event.pos); // Remove the key from the held buffer, is like setting to an idle state
-
                             debug!(
                                 "Reached the longest configured morse pattern, trigger corresponding action {:?} immediately",
                                 action
@@ -145,7 +142,26 @@ impl<'a> Keyboard<'a> {
                             let mut press_event = event;
                             press_event.pressed = true;
                             self.process_key_action_tap(action, press_event).await;
-                            self.held_buffer.remove(event.pos); // Remove the key from the held buffer, is like setting to an idle state
+
+                            // If holding right after this tap would repeat the tap (e.g. a
+                            // plain mod-tap's tap-then-hold), keep the key in the buffer as
+                            // if it had been early-fired so a re-press within the gap timeout
+                            // continues building the pattern. Without this, a bare tap always
+                            // clears the buffer and the very next hold - even one immediately
+                            // preceded by taps - resolves as a fresh single HOLD (the
+                            // modifier/layer action) instead of continuing tap-tap-hold repeat.
+                            if Self::action_from_pattern(self.keymap, key_action, pattern.followed_by_hold()) != Action::No
+                            {
+                                let now = Instant::now();
+                                let timeout = Self::morse_timeout(self.keymap, key_action, false);
+                                if let Some(k) = self.held_buffer.find_pos_mut(event.pos) {
+                                    k.state = KeyState::EarlyFired(pattern);
+                                    k.press_time = now;
+                                    k.timeout_time = now + timeout;
+                                }
+                            } else {
+                                self.held_buffer.remove(event.pos); // Remove the key from the held buffer, is like setting to an idle state
+                            }
                         } else {
                             // Expect a possible longer morse pattern (or idle timeout), update the state
                             let early_action = Self::check_early_fire(self.keymap, &k.action, pattern);
@@ -182,13 +198,32 @@ impl<'a> Keyboard<'a> {
                         k.press_time = released_time; // Use release time as the "press_time"
                         k.timeout_time = k.press_time + Self::morse_timeout(self.keymap, &k.action, false);
                     }
-                    KeyState::ProcessedButReleaseNotReportedYet(action) => {
+                    KeyState::ProcessedButReleaseNotReportedYet(action, pattern) => {
                         // Releasing a tap-hold action whose pressed HID report is already sent
                         info!("Releasing a morse action whose pressed action is already triggered");
-                        let _ = self.held_buffer.remove(event.pos);
                         // Process the release action
                         debug!("[morse] Releasing morse key: {:?}", event);
                         self.process_key_action_normal(action, event).await;
+
+                        // If this resolved as a tap (not a hold) and holding right after would
+                        // repeat it (e.g. a plain mod-tap's tap-then-hold), keep the key in the
+                        // buffer as if it had been early-fired so a re-press within the gap
+                        // timeout continues building the pattern - mirrors the early-fire case
+                        // above. A hold outcome is terminal: nothing to chain into afterward.
+                        if !pattern.last_is_hold()
+                            && Self::action_from_pattern(self.keymap, key_action, pattern.followed_by_hold())
+                                != Action::No
+                        {
+                            let now = Instant::now();
+                            let timeout = Self::morse_timeout(self.keymap, key_action, false);
+                            if let Some(k) = self.held_buffer.find_pos_mut(event.pos) {
+                                k.state = KeyState::EarlyFired(pattern);
+                                k.press_time = now;
+                                k.timeout_time = now + timeout;
+                            }
+                        } else {
+                            let _ = self.held_buffer.remove(event.pos);
+                        }
                     }
                     KeyState::FlowTapped(action) => {
                         // Flow-tap fired the tap action and is holding it down; release it now.
@@ -248,6 +283,17 @@ impl<'a> Keyboard<'a> {
             KeyAction::TapHold(tap_action, hold_action, _) => match pattern {
                 TAP => *tap_action,
                 HOLD => *hold_action,
+                _ if pattern.last_is_hold() && pattern.pattern_length() > 1 => {
+                    // A hold preceded by at least one completed tap (e.g. tap,
+                    // tap, then hold) - a plain tap-hold key has no dedicated
+                    // "hold after tap" action for this, so match QMK's
+                    // default behavior instead of firing the modifier/layer
+                    // hold: repeat the tap. This is what lets rhythmic
+                    // tap-tap-hold, or holding a key to auto-repeat its
+                    // letter, keep typing instead of unexpectedly becoming
+                    // the modifier.
+                    *tap_action
+                }
                 _ => Action::No,
             },
             KeyAction::Morse(idx) => keymap
@@ -361,6 +407,32 @@ impl<'a> Keyboard<'a> {
         }
     }
 
+    /// Flow tap exists to protect fast same-hand rolls (e.g. typing "like",
+    /// where several letters share a hand) from being delayed by a mod-tap
+    /// decision. When unilateral_tap is enabled for this key, only apply
+    /// that instant-tap shortcut to sequences that are actually same-hand -
+    /// otherwise a deliberate hold of a different-hand mod-tap key (e.g.
+    /// reaching for a modifier right after typing something) gets swallowed
+    /// as an instant tap before it ever gets a chance to resolve as a hold.
+    /// When unilateral_tap is disabled for this key, or hand info isn't
+    /// available, keep the prior behavior (always match).
+    pub fn flow_tap_hand_matches(
+        keymap: &KeyMap,
+        key_action: &KeyAction,
+        pos: KeyboardEventPos,
+        last_press_pos: Option<KeyboardEventPos>,
+    ) -> bool {
+        if !Self::is_unilateral_tap_enabled(keymap, key_action) {
+            return true;
+        }
+        let (KeyboardEventPos::Key(pos1), Some(KeyboardEventPos::Key(pos2))) = (pos, last_press_pos) else {
+            return true;
+        };
+        keymap
+            .hand_at(pos1.row as usize, pos1.col as usize)
+            .is_same_side(keymap.hand_at(pos2.row as usize, pos2.col as usize))
+    }
+
     /// Checks if the given pattern can fire its action early even though longer
     /// continuations exist. Returns Some(action) when the hold continuation has
     /// the same action and the tap continuation is not configured.
@@ -387,7 +459,13 @@ impl<'a> Keyboard<'a> {
         match keyAction {
             KeyAction::TapHold(tap_action, hold_action, _) => {
                 if pattern_start.last_is_hold() {
-                    Some(*hold_action)
+                    if pattern_start.pattern_length() > 1 {
+                        // Hold preceded by at least one completed tap: see
+                        // the matching case in `action_from_pattern`.
+                        Some(*tap_action)
+                    } else {
+                        Some(*hold_action)
+                    }
                 } else {
                     Some(*tap_action)
                 }

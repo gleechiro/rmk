@@ -154,6 +154,20 @@ impl ModifierCombination {
         ((active_req & 0x0F) | (active_req >> 4)) == ((req & 0x0F) | (req >> 4))
     }
 
+    /// Swap Ctrl and GUI on each hand, e.g. for a Mac-style layout where the
+    /// physical Ctrl-labeled key should act as Cmd and vice versa.
+    pub const fn swap_ctrl_gui(self) -> Self {
+        Self::new()
+            .with_left_ctrl(self.left_gui())
+            .with_left_shift(self.left_shift())
+            .with_left_alt(self.left_alt())
+            .with_left_gui(self.left_ctrl())
+            .with_right_ctrl(self.right_gui())
+            .with_right_shift(self.right_shift())
+            .with_right_alt(self.right_alt())
+            .with_right_gui(self.right_ctrl())
+    }
+
     /// Convert current modifier into packed bits:
     ///
     /// | bit4 | bit3 | bit2 | bit1 | bit0 |
