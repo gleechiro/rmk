@@ -46,14 +46,25 @@ fn percent(val: u16) -> u8 {
 
 pub struct SplitBattery {
     saadc: Saadc<'static, 1>,
+    /// Fixed-point (x1) running average of the raw ADC reading, smoothed
+    /// across polls. VDDH/5 only spans ~140 raw ADC codes across the whole
+    /// battery range, so a few LSBs of ordinary ADC/supply noise (e.g. a BLE
+    /// TX burst) swing the reported percentage several points; without this
+    /// it looked like the battery level was jumping around at random.
+    smoothed_raw: Option<i32>,
 }
 
 impl SplitBattery {
     pub fn new(saadc: Peri<'static, SAADC>) -> Self {
         interrupt::SAADC.set_priority(interrupt::Priority::P3);
         let channel = saadc::ChannelConfig::single_ended(saadc::VddhDiv5Input.degrade_saadc());
+        // Hardware-average 16 conversions per sample to cut ADC noise before
+        // it ever reaches software smoothing.
+        let mut config = saadc::Config::default();
+        config.oversample = saadc::Oversample::Over16x;
         Self {
-            saadc: Saadc::new(saadc, SaadcIrqs, saadc::Config::default(), [channel]),
+            saadc: Saadc::new(saadc, SaadcIrqs, config, [channel]),
+            smoothed_raw: None,
         }
     }
 
@@ -61,8 +72,13 @@ impl SplitBattery {
         let mut buf = [0i16; 1];
         let level = match with_timeout(Duration::from_millis(200), self.saadc.sample(&mut buf)).await {
             Ok(()) => {
-                let raw = if buf[0] < 0 { 0 } else { buf[0] as u16 };
-                percent(raw)
+                let raw = if buf[0] < 0 { 0 } else { buf[0] as i32 };
+                let smoothed = match self.smoothed_raw {
+                    Some(prev) => prev + (raw - prev) / 4,
+                    None => raw,
+                };
+                self.smoothed_raw = Some(smoothed);
+                percent(smoothed as u16)
             }
             Err(_) => 0,
         };
